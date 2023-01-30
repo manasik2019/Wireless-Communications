@@ -1,0 +1,213 @@
+/* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation;
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
+#include "ns3/core-module.h"
+#include "ns3/point-to-point-module.h"
+#include "ns3/network-module.h"
+#include "ns3/applications-module.h"
+
+#include "ns3/mobility-module.h"
+#include "ns3/mobility-model.h"
+#include "ns3/csma-module.h"
+
+//#include "ns3/propagation-loss-model.h"
+#include <ns3/cost231-propagation-loss-model.h>
+
+#include "ns3/internet-module.h"
+#include "ns3/propagation-delay-model.h"
+#include "ns3/wifi-mac-helper.h"
+#include "ns3/yans-wifi-channel.h"
+#include "ns3/yans-wifi-helper.h"
+#include <iostream>
+
+
+// Default Network Topology
+//
+//  Wifi 10.1.1.0
+//           
+//  *            *   
+//  |            |     
+// n0(transm)   n1(receiver)    
+
+
+           
+        
+using namespace ns3;
+
+
+
+NS_LOG_COMPONENT_DEFINE ("LAB1_2");
+
+
+int
+main (int argc, char *argv[])
+{
+  bool verbose = true;
+  uint32_t nWifi = 2;
+
+  CommandLine cmd;
+  cmd.AddValue ("nWifi", "Number of wifi STA devices", nWifi);
+  cmd.AddValue ("verbose", "Tell echo applications to log if true", verbose);
+  cmd.Parse (argc,argv);
+
+  if (nWifi > 18)
+    {
+      std::cout << "Number of wifi nodes " << nWifi << 
+                   " specified exceeds the mobility bounding box" << std::endl;
+      exit (1);
+    }
+
+  if (verbose)
+    {
+      LogComponentEnable ("UdpEchoClientApplication", LOG_LEVEL_INFO);
+      LogComponentEnable ("UdpEchoServerApplication", LOG_LEVEL_INFO);
+    }
+
+/////////////////////////////Nodes/////////////////////////////  
+  NodeContainer wifiStaNodes;
+  wifiStaNodes.Create (nWifi);
+
+
+ /////////////////////////////Wi-Fi part///////////////////////////// 
+
+  Ptr<YansWifiChannel> channel = CreateObject <YansWifiChannel> ();  //create a pointer for channel object
+  Ptr<Cost231PropagationLossModel> lossModel = CreateObject<Cost231PropagationLossModel> (); //create a pointer for propagation loss model
+  channel->SetPropagationLossModel (lossModel); // install propagation loss model
+  channel->SetPropagationDelayModel (CreateObject <ConstantSpeedPropagationDelayModel> ()); // install propagation delay model 
+  
+  Config::SetDefault ("ns3::WifiRemoteStationManager::FragmentationThreshold", StringValue ("2200"));
+  Config::SetDefault ("ns3::WifiRemoteStationManager::RtsCtsThreshold", StringValue ("2200"));
+  
+
+  YansWifiPhyHelper phy = YansWifiPhyHelper();
+  phy.SetChannel (channel);
+  phy.Set("TxPowerEnd", DoubleValue(16));
+  phy.Set("TxPowerStart", DoubleValue(16));
+  phy.Set("RxSensitivity", DoubleValue(-80));
+//  phy.Set("CcaMode1Threshold", DoubleValue(-99));
+  phy.Set("ChannelNumber", UintegerValue(36));
+  phy.Set("RxGain", DoubleValue(0));
+  phy.Set("TxGain", DoubleValue(0)); 
+
+
+
+  WifiHelper wifi = WifiHelper();
+  wifi.SetStandard (WIFI_STANDARD_80211a);
+ // wifi.SetRemoteStationManager ("ns3::ConstantRateWifiManager", "DataMode",StringValue ("DsssRate11Mbps"), "ControlMode",StringValue ("DsssRate11Mbps"), "RtsCtsThreshold", UintegerValue(3000));
+// wifi.SetRemoteStationManager ("ns3::ConstantRateWifiManager", "DataMode",StringValue ("OfdmRate54Mbps"), "ControlMode",StringValue ("OfdmRate54Mbps"), "RtsCtsThreshold", UintegerValue(3000));
+
+///////////////////////////////////////////////////////////c
+wifi.SetRemoteStationManager ("ns3::ArfWifiManager", "SuccessThreshold",StringValue ("1") );     
+//////////////////////////////////////////////////////////
+
+  WifiMacHelper mac = WifiMacHelper();
+  mac.SetType ("ns3::AdhocWifiMac");
+
+/////////////////////////////Devices///////////////////////////// 
+  NetDeviceContainer staDevices;
+  staDevices = wifi.Install (phy, mac, wifiStaNodes);
+
+ /////////////////////////////Deployment///////////////////////////// 
+      MobilityHelper mobility;
+      Ptr<ListPositionAllocator> positionAlloc = CreateObject<ListPositionAllocator> ();
+      positionAlloc->Add (Vector (0.0, 0.0, 3.5));
+      positionAlloc->Add (Vector (0.0, 1.37, 1.0)); //22.3, 19.4, 16.65, 13.8, 10.95, 8.05, 5.05, 1.37, 43 for Cost231 propagation model 43, 37.625,32.25 ,26.875 ,21.5 ,16.125 ,10.75 ,5.375
+      
+      mobility.SetPositionAllocator (positionAlloc);
+      mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+      mobility.Install (wifiStaNodes);
+  
+/////////////////////////////Stack of protocols///////////////////////////// 
+
+  InternetStackHelper stack;
+  stack.Install (wifiStaNodes);
+
+  Ipv4AddressHelper address;
+
+ /////////////////////////////Ip addresation/////////////////////////////  
+  address.SetBase ("10.1.1.0", "255.255.255.0");
+  Ipv4InterfaceContainer wifiInterfaces;
+  wifiInterfaces = address.Assign (staDevices);
+  
+
+/////////////////////////////Application part///////////////////////////// 
+  UdpEchoServerHelper echoServer (9);
+
+  ApplicationContainer serverApps = echoServer.Install (wifiStaNodes.Get (nWifi-1));
+  serverApps.Start (Seconds (1.0));
+  serverApps.Stop (Seconds (30.0));
+
+  UdpEchoClientHelper echoClient (wifiInterfaces.GetAddress (nWifi-1), 9);
+  echoClient.SetAttribute ("MaxPackets", UintegerValue (15));
+  echoClient.SetAttribute ("Interval", TimeValue (Seconds (1.0)));
+  echoClient.SetAttribute ("PacketSize", UintegerValue (1000));
+
+  ApplicationContainer clientApps =   echoClient.Install (wifiStaNodes.Get (0));
+  clientApps.Start (Seconds (2.0));
+  clientApps.Stop (Seconds (20.0));
+
+ 
+Ptr<MobilityModel> mobil = wifiStaNodes.Get(0)->GetObject<MobilityModel> ();
+Ptr<MobilityModel> mobil2 = wifiStaNodes.Get(1)->GetObject<MobilityModel> ();
+
+
+
+double powrx;
+powrx=lossModel->GetLoss(mobil, mobil2); 
+std::cout << powrx <<  " Loss:"<< std::endl; //out system loss
+
+double C = lossModel->GetShadowing();
+std::cout << C <<  " C Value:"<< std::endl; //out system loss
+
+
+double hb = lossModel->GetBSAntennaHeight();
+std::cout << hb <<  " BSAntennaHeight"<< std::endl; //Base Station antenna height
+
+double hr = lossModel->GetSSAntennaHeight();
+std::cout << hr <<  " SSAntennaHeight"<< std::endl; //Suscriber Station antenna height
+
+double distance = mobil->GetDistanceFrom (mobil2);
+std::cout << distance <<  " Distance:"<< std::endl; //out system loss
+/// ending
+
+//double powrx;
+//powrx=lossModel->CalcRxPower(16,mobil, mobil2); 
+//std::cout << powrx <<  " "<< std::endl; //out system loss
+
+//Ptr<TwoRayGroundPropagationLossModel> propmode = wifiStaNodes.Get(0)->GetObject<TwoRayGroundPropagationLossModel> ();
+//double pos;
+//pos=propmode->GetSystemLoss();
+//std::cout << pos <<  " distance "<< std::endl; 
+
+//Ptr<YansWifiPhyHelper> propmode =  wifiStaNodes.Get(0)->GetObject<YansWifiPhyHelper> ();
+//std::cout << propmode <<  " "<< std::endl; 
+//Time m_dalay_m_m2= propmode->GetDelay(mobil, mobil2);
+
+//TypeId propid = propmode->GetInstanceTypeId();
+//std1threshold::cout << propid.GetName()  <<  " distance "<< std::endl;
+
+
+
+  Simulator::Stop (Seconds (30.0));
+/////////////////////////////PCAP tracing/////////////////////////////   
+  phy.EnablePcap ("LAB1_2", staDevices .Get (nWifi-1), true);
+  phy.EnablePcap ("LAB1_2", staDevices .Get (0), true); 
+
+
+  Simulator::Run ();
+  Simulator::Destroy ();
+return 0;
+};
